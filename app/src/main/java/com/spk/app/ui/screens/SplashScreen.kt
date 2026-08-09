@@ -32,8 +32,33 @@ fun SplashScreen(onReady: () -> Unit) {
     val repo = remember { ItemsRepository.getInstance(context) }
     val state by repo.loadState.collectAsState()
 
-    LaunchedEffect(Unit) {
-        repo.initialize()
+    var reloadKey by remember { mutableIntStateOf(0) }
+    var checkingSeconds by remember { mutableIntStateOf(0) }
+
+    LaunchedEffect(reloadKey) {
+        // Watchdog: guarantee the splash can never sit on "Checking…" forever,
+        // even if the network call gets stuck in a spot OkHttp timeouts can't reach (DNS).
+        val done = try {
+            kotlinx.coroutines.withTimeoutOrNull(25_000) { repo.initialize() }
+        } catch (ce: kotlinx.coroutines.CancellationException) {
+            throw ce
+        } catch (t: Throwable) {
+            null
+        }
+        if (done == null) {
+            repo.continueOffline()
+        }
+    }
+
+    LaunchedEffect(state) {
+        if (state is ItemsLoadState.Loading) {
+            while (true) {
+                kotlinx.coroutines.delay(1000)
+                checkingSeconds++
+            }
+        } else {
+            checkingSeconds = 0
+        }
     }
 
     LaunchedEffect(state) {
@@ -71,7 +96,9 @@ fun SplashScreen(onReady: () -> Unit) {
                     imageVector = Icons.Filled.TrendingUp,
                     contentDescription = null,
                     tint = BgDeep,
-                    modifier = Modifier.size(42.dp).rotate(if (state is ItemsLoadState.Loading) rotation * 0f else 0f)
+                    modifier = Modifier
+                        .size(42.dp)
+                        .rotate(if (state is ItemsLoadState.Loading) rotation else 0f)
                 )
             }
 
@@ -88,7 +115,11 @@ fun SplashScreen(onReady: () -> Unit) {
 
             val message = when (val s = state) {
                 is ItemsLoadState.Loading -> s.message
-                is ItemsLoadState.Ready -> if (s.updatedFromRemote) "Item list updated · ${s.itemCount} items" else "${s.itemCount} items ready"
+                is ItemsLoadState.Ready -> when {
+                    s.updatedFromRemote -> "Item list updated · ${s.itemCount} items"
+                    s.updateFailed -> "${s.itemCount} items ready · using saved list"
+                    else -> "${s.itemCount} items ready"
+                }
                 is ItemsLoadState.Error -> s.message
                 ItemsLoadState.Idle -> "Starting up…"
             }
@@ -98,6 +129,15 @@ fun SplashScreen(onReady: () -> Unit) {
                 style = MaterialTheme.typography.bodyMedium,
                 color = TextSecondary
             )
+
+            if (state is ItemsLoadState.Loading && checkingSeconds >= 5) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "Still checking — your connection seems slow",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextTertiary
+                )
+            }
 
             Spacer(Modifier.height(28.dp))
 
@@ -123,9 +163,19 @@ fun SplashScreen(onReady: () -> Unit) {
                 )
             }
 
+            if (state is ItemsLoadState.Loading && checkingSeconds >= 5) {
+                Spacer(Modifier.height(20.dp))
+                TextButton(onClick = { repo.continueOffline() }) {
+                    Text("Continue with saved items", color = AccentMintSoft)
+                }
+            }
+
             if (state is ItemsLoadState.Error) {
                 Spacer(Modifier.height(20.dp))
-                TextButton(onClick = { onReady() }) {
+                TextButton(onClick = { reloadKey++ }) {
+                    Text("Retry", color = AccentMintSoft)
+                }
+                TextButton(onClick = { repo.continueOffline() }) {
                     Text("Continue offline", color = AccentMintSoft)
                 }
             }

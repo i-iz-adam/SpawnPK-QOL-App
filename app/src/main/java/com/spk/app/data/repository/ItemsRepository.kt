@@ -18,7 +18,7 @@ import java.util.concurrent.TimeUnit
 sealed class ItemsLoadState {
     object Idle : ItemsLoadState()
     data class Loading(val message: String) : ItemsLoadState()
-    data class Ready(val itemCount: Int, val updatedFromRemote: Boolean) : ItemsLoadState()
+    data class Ready(val itemCount: Int, val updatedFromRemote: Boolean, val updateFailed: Boolean = false) : ItemsLoadState()
     data class Error(val message: String) : ItemsLoadState()
 }
 
@@ -36,6 +36,10 @@ class ItemsRepository private constructor(private val appContext: Context) {
     private val client = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(10, TimeUnit.SECONDS)
+        // Bounds the ENTIRE call (DNS + connect + TLS + redirects + read).
+        // connect/read timeouts alone leave DNS resolution unbounded, which is
+        // what made the splash look stuck on blocked/slow networks.
+        .callTimeout(20, TimeUnit.SECONDS)
         .build()
 
     private val cacheFile: File get() = File(appContext.filesDir, "items.json")
@@ -68,24 +72,63 @@ class ItemsRepository private constructor(private val appContext: Context) {
 
         _loadState.value = ItemsLoadState.Loading("Checking for item list updates…")
         val remoteRaw = fetchRemote()
-        if (remoteRaw != null && remoteRaw != raw) {
+
+        if (remoteRaw == null) {
+            // Update check failed (timeout, no network, blocked host, ...).
+            if (raw == null) {
+                _loadState.value = ItemsLoadState.Error("Couldn't load the item list. Check your connection.")
+            } else {
+                // Already showing local items — proceed, but flag that the update didn't happen.
+                _loadState.value = ItemsLoadState.Ready(
+                    itemCount = _items.value.size,
+                    updatedFromRemote = false,
+                    updateFailed = true
+                )
+            }
+            return@withContext
+        }
+
+        if (remoteRaw != raw) {
             runCatching { cacheFile.writeText(remoteRaw) }
             publish(remoteRaw, updatedFromRemote = true)
-            raw = remoteRaw
-        } else if (raw == null) {
-            _loadState.value = ItemsLoadState.Error("Couldn't load the item list. Check your connection.")
-            return@withContext
         }
     }
 
-    private fun publish(raw: String, updatedFromRemote: Boolean) {
-        val parsed = runCatching { adapter.fromJson(raw) }.getOrNull() ?: emptyMap()
+    /**
+     * Escape hatch for the splash screen: proceed with whatever local items we
+     * already have, even if the update check never finished.
+     */
+    fun continueOffline() {
+        if (_loadState.value is ItemsLoadState.Loading || _loadState.value is ItemsLoadState.Error) {
+            _loadState.value = ItemsLoadState.Ready(
+                itemCount = _items.value.size,
+                updatedFromRemote = false,
+                updateFailed = true
+            )
+        }
+    }
+
+    private fun publish(raw: String, updatedFromRemote: Boolean, updateFailed: Boolean = false) {
+        val parsed = runCatching { adapter.fromJson(raw) }.getOrNull()
+        if (parsed == null) {
+            // Bad JSON from an update: keep whatever items we already had instead of wiping them.
+            _loadState.value = ItemsLoadState.Ready(
+                itemCount = _items.value.size,
+                updatedFromRemote = false,
+                updateFailed = true
+            )
+            return
+        }
         val cleaned = parsed.entries
             .filter { it.key.startsWith(AppConfig.VALID_ITEM_PREFIX) }
             .map { MarketItem(name = it.key.removePrefix(AppConfig.VALID_ITEM_PREFIX), itemId = it.value) }
             .sortedBy { it.name }
         _items.value = cleaned
-        _loadState.value = ItemsLoadState.Ready(itemCount = cleaned.size, updatedFromRemote = updatedFromRemote)
+        _loadState.value = ItemsLoadState.Ready(
+            itemCount = cleaned.size,
+            updatedFromRemote = updatedFromRemote,
+            updateFailed = updateFailed
+        )
     }
 
     private fun fetchRemote(): String? {
