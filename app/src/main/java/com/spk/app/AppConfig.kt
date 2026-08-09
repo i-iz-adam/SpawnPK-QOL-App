@@ -7,7 +7,7 @@ object AppConfig {
 
 
     const val ITEMS_JSON_RAW_URL =
-        "https://raw.githubusercontent.com/i-iz-adam/SpawnPk-QOL-App/refs/heads/main/app/src/main/assets/items.json"
+        "https://raw.githubusercontent.com/i-iz-adam/SpawnPK-QOL-App/refs/heads/main/app/src/main/assets/items.json"
 
     /** How often the background worker checks your watchlist for new sales. */
     const val BACKGROUND_CHECK_INTERVAL_MINUTES = 15L
