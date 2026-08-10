@@ -111,9 +111,10 @@ fun ProfileScreen(
                 Spacer(Modifier.width(8.dp))
                 FilledIconButton(
                     onClick = {
-                        if (newAccount.isNotBlank()) {
-                            scope.launch { repo.addAccount(newAccount.trim()) }
+                        val nameToAdd = newAccount.trim()
+                        if (nameToAdd.isNotBlank()) {
                             newAccount = ""
+                            scope.launch { repo.addAccount(nameToAdd) }
                         }
                     },
                     colors = IconButtonDefaults.filledIconButtonColors(containerColor = AccentMint)
